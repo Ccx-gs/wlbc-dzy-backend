@@ -7,6 +7,8 @@ import com.shopping.service.ProductService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Set;
+
 @RestController
 @RequestMapping("/api/product")
 @RequiredArgsConstructor
@@ -30,5 +32,22 @@ public class ProductController {
     public Result<Void> update(@RequestBody Product product) {
         productService.update(product);
         return Result.ok();
+    }
+
+    @GetMapping("/search")
+    public Result<Page<Product>> search(@RequestParam String keyword,
+                                         @RequestParam(defaultValue = "1") Integer page,
+                                         @RequestParam(defaultValue = "10") Integer size) {
+        return Result.ok(productService.search(keyword, page, size));
+    }
+
+    @GetMapping("/hot-keywords")
+    public Result<Set<String>> getHotKeywords() {
+        return Result.ok(productService.getHotKeywords());
+    }
+
+    @GetMapping("/autocomplete")
+    public Result<Set<String>> autocomplete(@RequestParam String prefix) {
+        return Result.ok(productService.autocomplete(prefix));
     }
 }
