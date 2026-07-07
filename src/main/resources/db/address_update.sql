@@ -1,0 +1,14 @@
+ALTER TABLE address
+ADD COLUMN province VARCHAR(100) NULL COMMENT '省份',
+ADD COLUMN city VARCHAR(100) NULL COMMENT '城市',
+ADD COLUMN district VARCHAR(100) NULL COMMENT '区县',
+ADD COLUMN detail_addr VARCHAR(500) NULL COMMENT '详细地址',
+ADD COLUMN longitude DOUBLE NULL COMMENT '经度',
+ADD COLUMN latitude DOUBLE NULL COMMENT '纬度';
+
+ALTER TABLE order_main
+ADD COLUMN receiver_full_addr VARCHAR(500) NULL COMMENT '完整收货地址',
+ADD COLUMN lon DOUBLE NULL COMMENT '经度',
+ADD COLUMN lat DOUBLE NULL COMMENT '纬度';
+
+UPDATE address SET detail_addr = receiver_address WHERE detail_addr IS NULL;

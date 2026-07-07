@@ -54,30 +54,59 @@ public class CartServiceImpl implements CartService {
         return product;
     }
 
-    private CartItemVO parseItem(String jsonStr, Product product) {
+    private CartItemVO parseItem(Long productId, String jsonStr) {
         CartItemVO vo = new CartItemVO();
-        vo.setProductId(product.getId());
-        vo.setProductName(product.getName());
-        vo.setProductImage(product.getMainImage());
-        vo.setUnitPrice(product.getPrice());
-        // 兼容旧数据: 纯数字字符串当作 count，selected 默认 true
+        vo.setProductId(productId);
         try {
             JSONObject obj = JSONUtil.parseObj(jsonStr);
             vo.setCount(obj.getInt("count", 1));
             vo.setSelected(obj.getBool("selected", true));
+            vo.setAddTime(obj.getLong("addTime", System.currentTimeMillis()));
+            vo.setProductName(obj.getStr("name", ""));
+            vo.setProductImage(obj.getStr("image", ""));
+            Object priceObj = obj.get("price");
+            if (priceObj instanceof Number) {
+                vo.setUnitPrice(BigDecimal.valueOf(((Number) priceObj).doubleValue()));
+            } else if (priceObj != null) {
+                vo.setUnitPrice(new BigDecimal(priceObj.toString()));
+            } else {
+                vo.setUnitPrice(BigDecimal.ZERO);
+            }
         } catch (Exception e) {
+            // 兼容最老数据：纯数字字符串 = count
             vo.setCount(Integer.parseInt(jsonStr));
             vo.setSelected(true);
+            vo.setAddTime(System.currentTimeMillis());
+            vo.setProductName("");
+            vo.setUnitPrice(BigDecimal.ZERO);
         }
         vo.calcSubtotal();
         return vo;
     }
 
-    private String buildValue(Integer count, Boolean selected) {
+    private String buildValue(Integer count, Boolean selected, Long addTime, String name, BigDecimal price, String image) {
         JSONObject obj = new JSONObject();
         obj.set("count", count);
         obj.set("selected", selected != null ? selected : true);
+        obj.set("addTime", addTime != null ? addTime : System.currentTimeMillis());
+        obj.set("name", name);
+        obj.set("price", price);
+        obj.set("image", image != null ? image : "");
         return obj.toString();
+    }
+
+    /** 部分更新：只改 count/selected，保留 name/price/image/addTime */
+    private void partialUpdate(String key, String field, Integer count, Boolean selected) {
+        String exist = (String) stringRedisTemplate.opsForHash().get(key, field);
+        JSONObject obj;
+        try {
+            obj = JSONUtil.parseObj(exist);
+        } catch (Exception e) {
+            obj = new JSONObject();
+        }
+        if (count != null) obj.set("count", count);
+        if (selected != null) obj.set("selected", selected);
+        stringRedisTemplate.opsForHash().put(key, field, obj.toString());
     }
 
     private void refreshTtl(String key) {
@@ -102,10 +131,12 @@ public class CartServiceImpl implements CartService {
         // 读取已有数量，合并
         String exist = (String) stringRedisTemplate.opsForHash().get(key, field);
         int total = count;
+        Long addTime = null;
         if (exist != null) {
             try {
                 JSONObject obj = JSONUtil.parseObj(exist);
                 total += obj.getInt("count", 0);
+                addTime = obj.getLong("addTime", null);
             } catch (Exception e) {
                 total += Integer.parseInt(exist);
             }
@@ -116,7 +147,8 @@ public class CartServiceImpl implements CartService {
         if (total > product.getStock()) {
             throw new BusinessException(400, "库存不足，当前库存: " + product.getStock());
         }
-        stringRedisTemplate.opsForHash().put(key, field, buildValue(total, true));
+        stringRedisTemplate.opsForHash().put(key, field,
+                buildValue(total, true, addTime, product.getName(), product.getPrice(), product.getMainImage()));
         refreshTtl(key);
     }
 
@@ -131,9 +163,16 @@ public class CartServiceImpl implements CartService {
         int totalCount = 0;
         for (Map.Entry<Object, Object> entry : entries.entrySet()) {
             Long productId = Long.valueOf(entry.getKey().toString());
-            Product product = productService.getById(productId);
-            if (product == null) continue;
-            CartItemVO vo = parseItem(entry.getValue().toString(), product);
+            CartItemVO vo = parseItem(productId, entry.getValue().toString());
+            // 兼容旧数据：Redis 中没有 name/price 时回退查库
+            if (vo.getProductName() == null || vo.getProductName().isEmpty()) {
+                Product product = productService.getById(productId);
+                if (product == null) continue;
+                vo.setProductName(product.getName());
+                vo.setProductImage(product.getMainImage());
+                vo.setUnitPrice(product.getPrice());
+                vo.calcSubtotal();
+            }
             items.add(vo);
             totalCount += vo.getCount();
             if (vo.getSelected() != null && vo.getSelected()) {
@@ -141,6 +180,7 @@ public class CartServiceImpl implements CartService {
                 selectedTotal = selectedTotal.add(vo.getSubtotal());
             }
         }
+        items.sort((a, b) -> Long.compare(b.getAddTime(), a.getAddTime()));
         CartVO cartVO = new CartVO();
         cartVO.setItems(items);
         cartVO.setSelectedCount(selectedCount);
@@ -178,11 +218,7 @@ public class CartServiceImpl implements CartService {
         if (exist == null) {
             throw new BusinessException(400, "购物车中没有该商品");
         }
-        boolean selected = true;
-        try {
-            selected = JSONUtil.parseObj(exist).getBool("selected", true);
-        } catch (Exception ignored) {}
-        stringRedisTemplate.opsForHash().put(key, field, buildValue(count, selected));
+        partialUpdate(key, field, count, null);
         refreshTtl(key);
     }
 
@@ -215,17 +251,14 @@ public class CartServiceImpl implements CartService {
         if (exist == null) {
             throw new BusinessException(400, "购物车中没有该商品");
         }
-        int count;
         boolean selected;
         try {
             JSONObject obj = JSONUtil.parseObj(exist);
-            count = obj.getInt("count", 1);
             selected = !obj.getBool("selected", true);
         } catch (Exception e) {
-            count = Integer.parseInt(exist);
             selected = false;
         }
-        stringRedisTemplate.opsForHash().put(key, field, buildValue(count, selected));
+        partialUpdate(key, field, null, selected);
         refreshTtl(key);
     }
 
@@ -236,14 +269,7 @@ public class CartServiceImpl implements CartService {
         Map<Object, Object> entries = stringRedisTemplate.opsForHash().entries(key);
         for (Map.Entry<Object, Object> entry : entries.entrySet()) {
             String field = entry.getKey().toString();
-            int count;
-            try {
-                count = JSONUtil.parseObj(entry.getValue().toString()).getInt("count", 1);
-            } catch (Exception e) {
-                count = Integer.parseInt(entry.getValue().toString());
-            }
-            stringRedisTemplate.opsForHash().put(key, field,
-                    buildValue(count, selectAll != null && selectAll));
+            partialUpdate(key, field, null, selectAll != null && selectAll);
         }
         refreshTtl(key);
     }

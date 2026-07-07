@@ -13,6 +13,17 @@ spring:
       port: 6379
   jackson:
     property-naming-strategy: LOWER_CAMEL_CASE
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+logging:
+  charset:
+    console: UTF-8
+  level:
+    com.shopping: info
+    org.apache.ibatis: warn
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -34,3 +45,14 @@ knife4j:
   enable: true
   setting:
     language: zh_cn
+
+file:
+  upload-dir: uploads
+  access-url: http://localhost:8080/uploads
+
+ai:
+  api-url: https://api.deepseek.com/v1/chat/completions
+  api-key: sk-48cb004c03f4499bab9fc68c8bcdb838
+  model: deepseek-v4-flash
+  timeout: 30000
+  max-tokens: 2000

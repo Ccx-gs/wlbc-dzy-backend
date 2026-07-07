@@ -8,10 +8,10 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.shopping.entity.Product;
 import com.shopping.mapper.ProductMapper;
 import com.shopping.service.ProductService;
+import com.shopping.service.StockService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.ScanOptions;
@@ -19,6 +19,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -29,6 +30,7 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
 
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
+    private final StockService stockService;
 
     private static final String PAGE_KEY = "cache:product:page:";
     private static final String DETAIL_KEY = "cache:product:detail:";
@@ -42,6 +44,14 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
 
     @PostConstruct
     public void initAutocomplete() {
+        // 每次启动都同步库存到 Redis
+        java.util.Map<Long, Integer> stockMap = new java.util.HashMap<>();
+        for (Product p : list()) {
+            stockMap.put(p.getId(), p.getStock());
+        }
+        stockService.syncAllStock(stockMap);
+
+        // autocomplete 只需初始化一次
         Boolean exists = stringRedisTemplate.hasKey(AUTOCOMPLETE_KEY);
         if (exists != null && exists) return;
         List<Product> products = lambdaQuery().eq(Product::getStatus, 1).select(Product::getName).list();
@@ -58,9 +68,14 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
     public Set<String> autocomplete(String prefix) {
         if (prefix == null || prefix.trim().isEmpty()) return Set.of();
         try {
-            return stringRedisTemplate.opsForZSet()
+            Set<String> result = stringRedisTemplate.opsForZSet()
                     .rangeByLex(AUTOCOMPLETE_KEY,
                             org.springframework.data.domain.Range.closed(prefix, prefix + "\uffff"));
+            if (result == null || result.isEmpty()) return Set.of();
+            if (result.size() > 10) {
+                return result.stream().limit(10).collect(java.util.stream.Collectors.toSet());
+            }
+            return result;
         } catch (Exception e) {
             log.warn("autocomplete failed", e);
             return Set.of();
@@ -68,35 +83,42 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
     }
 
     @Override
-    public Page<Product> page(Integer categoryId, Integer pageNum, Integer pageSize) {
-        String key = PAGE_KEY + categoryId + ":" + pageNum + ":" + pageSize;
+    public Page<Product> page(Integer categoryId, Integer pageNum, Integer pageSize, BigDecimal minPrice, BigDecimal maxPrice) {
+        String key = PAGE_KEY + categoryId + ":" + pageNum + ":" + pageSize + ":" + minPrice + ":" + maxPrice;
         String cached = safeGet(key);
         if (cached != null) {
             return deserializePage(cached);
         }
-        return queryPageAndCache(key, categoryId, pageNum, pageSize);
+        return queryPageAndCache(key, categoryId, pageNum, pageSize, minPrice, maxPrice);
     }
 
     @Override
     public Product detail(Long id) {
         String key = DETAIL_KEY + id;
         String cached = safeGet(key);
-        if (cached != null) {
-            return cached.equals("{}") ? null : deserializeObj(cached, Product.class);
-        }
-        synchronized (this) {
-            cached = safeGet(key);
-            if (cached != null) {
-                return cached.equals("{}") ? null : deserializeObj(cached, Product.class);
+        Product product;
+        if (cached != null && !cached.equals("{}")) {
+            product = deserializeObj(cached, Product.class);
+        } else {
+            synchronized (this) {
+                cached = safeGet(key);
+                if (cached != null && !cached.equals("{}")) {
+                    product = deserializeObj(cached, Product.class);
+                } else {
+                    product = getById(id);
+                    if (product == null) {
+                        safeSet(key, "{}", CACHE_NULL_TTL, TimeUnit.MINUTES);
+                        return null;
+                    }
+                    safeSet(key, serialize(product), CACHE_DETAIL_TTL, TimeUnit.HOURS);
+                }
             }
-            Product product = getById(id);
-            if (product == null) {
-                safeSet(key, "{}", CACHE_NULL_TTL, TimeUnit.MINUTES);
-                return null;
-            }
-            safeSet(key, serialize(product), CACHE_DETAIL_TTL, TimeUnit.HOURS);
-            return product;
         }
+        Integer redisStock = stockService.getRedisStock(id);
+        if (redisStock != null) {
+            product.setStock(redisStock);
+        }
+        return product;
     }
 
     @Override
@@ -104,11 +126,21 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
         updateById(product);
         safeDelete(DETAIL_KEY + product.getId());
         deletePageCacheByScan();
+        stockService.syncStock(product.getId(), product.getStock());
     }
 
     @Override
-    public Page<Product> search(String keyword, Integer pageNum, Integer pageSize) {
-        String cacheKey = SEARCH_KEY + keyword + ":" + pageNum + ":" + pageSize;
+    public boolean save(Product product) {
+        boolean saved = super.save(product);
+        if (saved) {
+            stockService.syncStock(product.getId(), product.getStock());
+        }
+        return saved;
+    }
+
+    @Override
+    public Page<Product> search(String keyword, Integer pageNum, Integer pageSize, BigDecimal minPrice, BigDecimal maxPrice) {
+        String cacheKey = SEARCH_KEY + keyword + ":" + pageNum + ":" + pageSize + ":" + minPrice + ":" + maxPrice;
         String cached = safeGet(cacheKey);
         if (cached != null) {
             return deserializePage(cached);
@@ -125,6 +157,13 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
             }
             LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
             wrapper.like(Product::getName, keyword).eq(Product::getStatus, 1);
+            if (minPrice != null && minPrice.compareTo(BigDecimal.ZERO) >= 0) {
+                wrapper.ge(Product::getPrice, minPrice);
+            }
+            if (maxPrice != null && maxPrice.compareTo(BigDecimal.ZERO) > 0) {
+                wrapper.le(Product::getPrice, maxPrice);
+            }
+            wrapper.orderByDesc(Product::getSales);
             Page<Product> page = page(new Page<>(pageNum, pageSize), wrapper);
             safeSet(cacheKey, serialize(page), CACHE_SEARCH_TTL, TimeUnit.MINUTES);
             return page;
@@ -186,10 +225,16 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, Product> impl
         }
     }
 
-    private Page<Product> queryPageAndCache(String key, Integer categoryId, Integer pageNum, Integer pageSize) {
+    private Page<Product> queryPageAndCache(String key, Integer categoryId, Integer pageNum, Integer pageSize, BigDecimal minPrice, BigDecimal maxPrice) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
         if (categoryId != null && categoryId > 0) {
             wrapper.eq(Product::getCategoryId, categoryId);
+        }
+        if (minPrice != null && minPrice.compareTo(BigDecimal.ZERO) >= 0) {
+            wrapper.ge(Product::getPrice, minPrice);
+        }
+        if (maxPrice != null && maxPrice.compareTo(BigDecimal.ZERO) > 0) {
+            wrapper.le(Product::getPrice, maxPrice);
         }
         wrapper.eq(Product::getStatus, 1).orderByDesc(Product::getSales);
         Page<Product> page = page(new Page<>(pageNum, pageSize), wrapper);

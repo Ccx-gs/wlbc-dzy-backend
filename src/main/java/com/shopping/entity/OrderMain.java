@@ -18,8 +18,17 @@ public class OrderMain {
     private String receiverName;
     private String receiverPhone;
     private String receiverAddress;
+    private String receiverFullAddr;
+    private Double lon;
+    private Double lat;
     private String remark;
     private LocalDateTime payTime;
+    /** 使用的用户优惠券ID */
+    private Long couponId;
+    /** 优惠券减免金额 */
+    private BigDecimal discountAmount;
+    /** 本单获得的积分 */
+    private Integer pointsEarned;
     @TableLogic
     private Integer isDeleted;
     private LocalDateTime createTime;

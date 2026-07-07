@@ -17,6 +17,8 @@ public class User {
     private String avatar;
     private Integer gender;
     private Integer status;
+    /** 可用积分 */
+    private Integer points;
     @TableLogic
     private Integer isDeleted;
     private LocalDateTime createTime;

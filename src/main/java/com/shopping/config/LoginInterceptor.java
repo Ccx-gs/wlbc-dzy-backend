@@ -44,6 +44,7 @@ public class LoginInterceptor implements HandlerInterceptor {
         userDTO.setAvatar(avatar != null && !avatar.isEmpty() ? avatar : null);
 
         UserHolder.saveUser(userDTO);
+        UserHolder.saveToken(token);
 
         // 自动续期
         stringRedisTemplate.expire(TOKEN_PREFIX + token, TOKEN_TTL, TimeUnit.MINUTES);

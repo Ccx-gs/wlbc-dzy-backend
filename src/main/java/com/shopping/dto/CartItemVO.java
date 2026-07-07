@@ -12,6 +12,7 @@ public class CartItemVO {
     private Integer count;
     private Boolean selected;
     private BigDecimal subtotal;
+    private Long addTime;
 
     public void calcSubtotal() {
         if (unitPrice != null && count != null) {

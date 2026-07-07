@@ -7,6 +7,7 @@ import com.shopping.service.ProductService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.Set;
 
 @RestController
@@ -16,11 +17,22 @@ public class ProductController {
 
     private final ProductService productService;
 
+    @GetMapping("/list")
+    public Result<Page<Product>> list(@RequestParam(required = false) Integer categoryId,
+                                      @RequestParam(required = false) BigDecimal minPrice,
+                                      @RequestParam(required = false) BigDecimal maxPrice,
+                                      @RequestParam(defaultValue = "1") Integer pageNum,
+                                      @RequestParam(defaultValue = "12") Integer pageSize) {
+        return Result.ok(productService.page(categoryId, pageNum, pageSize, minPrice, maxPrice));
+    }
+
     @GetMapping("/page")
     public Result<Page<Product>> page(@RequestParam(required = false) Integer category_id,
+                                       @RequestParam(required = false) BigDecimal min_price,
+                                       @RequestParam(required = false) BigDecimal max_price,
                                        @RequestParam(defaultValue = "1") Integer page,
                                        @RequestParam(defaultValue = "10") Integer size) {
-        return Result.ok(productService.page(category_id, page, size));
+        return Result.ok(productService.page(category_id, page, size, min_price, max_price));
     }
 
     @GetMapping("/detail/{id}")
@@ -36,9 +48,11 @@ public class ProductController {
 
     @GetMapping("/search")
     public Result<Page<Product>> search(@RequestParam String keyword,
+                                         @RequestParam(required = false) BigDecimal min_price,
+                                         @RequestParam(required = false) BigDecimal max_price,
                                          @RequestParam(defaultValue = "1") Integer page,
                                          @RequestParam(defaultValue = "10") Integer size) {
-        return Result.ok(productService.search(keyword, page, size));
+        return Result.ok(productService.search(keyword, page, size, min_price, max_price));
     }
 
     @GetMapping("/hot-keywords")
